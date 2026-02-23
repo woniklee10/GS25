@@ -30,62 +30,70 @@ st.caption("POS 데이터를 선택해주세요")
 uploaded_file = st.file_uploader("판매 현황 CSV 파일", type=['csv'])
 
 if uploaded_file:
+    # 1. 엑셀 파일 2번째 줄부터 한글 안 깨지게 읽기
     try:
-        df = pd.read_csv(uploaded_file)
+        df = pd.read_csv(uploaded_file, header=1)
     except UnicodeDecodeError:
-        uploaded_file.seek(0)  # 👈 추가된 부분: 책갈피를 다시 맨 처음으로 되돌립니다!
-        df = pd.read_csv(uploaded_file, encoding='cp949')
-        
-    # --- [발주 로직] ---
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, encoding='cp949', header=1)
+    
+    # --- [안전한 발주 로직] ---
     def calculate_mobile_order(row):
-        avg_sales = row['주간판매량'] / 7
-        target = avg_sales * 2.5 # 모바일용 안전재고율 소폭 상향
+        # 주간판매량과 현재재고에 빈칸이나 이상한 글자가 있어도 강제로 숫자로 변환!
+        try:
+            sales = float(row['주간판매량'])
+        except:
+            sales = 0.0
+            
+        try:
+            stock = int(row['현재재고'])
+        except:
+            stock = 0
+
+        avg_sales = sales / 7
+        target = avg_sales * 2.5 
         weight = 1.0
         
-        # 상권/날씨/행사 가중치 (이전과 동일)
-        if store_type == "오피스가" and row['카테고리'] in ['도시락', '컵커피']: weight += 0.3
-        if weather['is_rainy'] and ("우산" in row['상품명'] or row['카테고리'] == '면류'): weight += 3.0
+        # 상권/날씨/행사 가중치 (글자 에러 방지를 위해 str() 추가)
+        if store_type == "오피스가" and str(row['카테고리']) in ['도시락', '컵커피']: weight += 0.3
+        if weather['is_rainy'] and ("우산" in str(row['상품명']) or str(row['카테고리']) == '면류'): weight += 3.0
         if "1+1" in str(row['행사']): weight += 0.5
 
-        return max(0, int((target * weight) - row['현재재고']))
+        # 🌟 핵심: row['현재재고'] 대신 안전한 숫자 'stock'을 뺍니다!
+        return max(0, int((target * weight) - stock))
 
+    # 로직 적용
     df['추천'] = df.apply(calculate_mobile_order, axis=1)
 
-    # --- [모바일용 리스트 뷰] ---
+    # --- [모바일 화면 출력] ---
     st.subheader("📦 발주 추천 목록")
-    
-    # 모바일에서는 표(Table)보다 카드 형태나 필요한 정보만 보여주는 것이 좋습니다.
-    # 데이터 에디터는 화면을 많이 차지하므로 필요한 컬럼만 최소화합니다.
     
     edited_df = st.data_editor(
         df[['상품명', '현재재고', '추천']],
         column_config={
             "상품명": st.column_config.TextColumn("상품명", disabled=True),
-            "현재재고": st.column_config.NumberColumn("재고", disabled=True, format="%d개"),
-            "추천": st.column_config.NumberColumn("발주량", min_value=0, step=1, help="수정가능")
+            "현재재고": st.column_config.NumberColumn("현재재고", disabled=True),
+            "추천": st.column_config.NumberColumn("발주확정량", min_value=0, step=1)
         },
-        use_container_width=True, # 화면 너비 꽉 채우기
+        use_container_width=True,
         hide_index=True
     )
 
-    # 하단 고정 버튼 느낌을 주기 위한 여백
     st.write("") 
     
     if st.button("🚀 발주 확정 및 저장", type="primary", use_container_width=True):
         final = edited_df[edited_df['추천'] > 0]
-        st.success(f"총 {len(final)}건 확정됨")
+        st.success(f"총 {len(final)}건이 확정되었습니다!")
         
         # CSV 다운로드
         csv = final.to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="📥 발주서 파일 받기",
+            label="📥 스마트 발주서 파일 다운로드",
             data=csv,
-            file_name="order_mobile.csv",
+            file_name="GS25_Smart_Order.csv",
             mime="text/csv",
             use_container_width=True
         )
 
 else:
-
-    st.info("👆 위에서 파일을 업로드하면 분석이 시작됩니다.")
-
+    st.info("👆 위 버튼을 눌러 POS 판매 현황(CSV) 파일을 올려주세요.")

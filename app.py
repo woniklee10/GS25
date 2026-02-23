@@ -30,16 +30,35 @@ st.caption("POS 데이터를 선택해주세요")
 uploaded_file = st.file_uploader("판매 현황 CSV 파일", type=['csv'])
 
 if uploaded_file:
-    # 1. 엑셀 파일 2번째 줄부터 한글 안 깨지게 읽기
+    # 1. 먼저 그냥(1번째 줄부터) 읽어봅니다.
     try:
-        df = pd.read_csv(uploaded_file, header=1)
+        df = pd.read_csv(uploaded_file)
     except UnicodeDecodeError:
         uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, encoding='cp949', header=1)
+        df = pd.read_csv(uploaded_file, encoding='cp949')
+    
+    # 열 이름의 숨겨진 공백(띄어쓰기) 모두 제거
+    df.columns = df.columns.str.strip()
+
+    # 2. 만약 1번째 줄에 '상품명'이나 '카테고리'가 없다면? (POS 원본 파일이라서 2번째 줄에 제목이 있는 경우)
+    if '카테고리' not in df.columns:
+        uploaded_file.seek(0)
+        try:
+            df = pd.read_csv(uploaded_file, header=1)
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, encoding='cp949', header=1)
+        
+        # 다시 공백 제거
+        df.columns = df.columns.str.strip()
+        
+    # 만약 '행사여부' 등의 이름으로 되어있다면 '행사'로 통일 (에러 방지용)
+    if '행사여부' in df.columns: df.rename(columns={'행사여부': '행사'}, inplace=True)
+    if '판매량' in df.columns: df.rename(columns={'판매량': '주간판매량'}, inplace=True)
+    if '현재 재고' in df.columns: df.rename(columns={'현재 재고': '현재재고'}, inplace=True)
     
     # --- [안전한 발주 로직] ---
     def calculate_mobile_order(row):
-        # 주간판매량과 현재재고에 빈칸이나 이상한 글자가 있어도 강제로 숫자로 변환!
         try:
             sales = float(row['주간판매량'])
         except:
@@ -54,12 +73,15 @@ if uploaded_file:
         target = avg_sales * 2.5 
         weight = 1.0
         
-        # 상권/날씨/행사 가중치 (글자 에러 방지를 위해 str() 추가)
-        if store_type == "오피스가" and str(row['카테고리']) in ['도시락', '컵커피']: weight += 0.3
-        if weather['is_rainy'] and ("우산" in str(row['상품명']) or str(row['카테고리']) == '면류'): weight += 3.0
-        if "1+1" in str(row['행사']): weight += 0.5
+        # 상권/날씨/행사 가중치 (글자 에러 방지)
+        if store_type == "오피스가" and str(row.get('카테고리', '')) in ['도시락', '컵커피']: weight += 0.3
+        if weather['is_rainy'] and ("우산" in str(row.get('상품명', '')) or str(row.get('카테고리', '')) == '면류'): weight += 3.0
+        
+        # 행사 컬럼이 없는 경우를 대비한 안전 장치
+        event_val = str(row.get('행사', ''))
+        if "1+1" in event_val: weight += 0.5
+        elif "2+1" in event_val: weight += 0.3
 
-        # 🌟 핵심: row['현재재고'] 대신 안전한 숫자 'stock'을 뺍니다!
         return max(0, int((target * weight) - stock))
 
     # 로직 적용
@@ -88,7 +110,7 @@ if uploaded_file:
         # CSV 다운로드
         csv = final.to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="📥 스마트 발주서 파일 다운로드",
+            label="📥 스마트 발주서 다운로드",
             data=csv,
             file_name="GS25_Smart_Order.csv",
             mime="text/csv",

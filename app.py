@@ -30,8 +30,12 @@ st.caption("POS 데이터를 선택해주세요")
 uploaded_file = st.file_uploader("판매 현황 CSV 파일", type=['csv'])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    
+    # 한글 깨짐 방지를 위해 여러 방식을 시도하도록 수정
+    try:
+        df = pd.read_csv(uploaded_file) # 기본 방식 시도
+    except UnicodeDecodeError:
+        df = pd.read_csv(uploaded_file, encoding='cp949') # 엑셀/POS 한글 방식 시도
+        
     # --- [발주 로직] ---
     def calculate_mobile_order(row):
         avg_sales = row['주간판매량'] / 7
@@ -82,4 +86,5 @@ if uploaded_file:
         )
 
 else:
+
     st.info("👆 위에서 파일을 업로드하면 분석이 시작됩니다.")

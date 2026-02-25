@@ -2,172 +2,168 @@ import streamlit as st
 import pandas as pd
 import requests
 from geopy.geocoders import Nominatim
-from datetime import datetime, timedelta
+import numpy as np
 
 # --- [설정] ---
-st.set_page_config(page_title="GS25 스마트 발주 (위치기반)", layout="centered")
+st.set_page_config(page_title="GS25 매출비교 기반 발주", layout="centered")
 
-# --- [함수 1: 점포 위치 찾기] ---
+# --- [함수: 위치 및 날씨 (기존과 동일)] ---
 def get_location(store_name):
     try:
-        geolocator = Nominatim(user_agent="gs25_manager_app")
-        # 한국 검색을 위해 뒤에 'South Korea'를 붙여줌
+        geolocator = Nominatim(user_agent="gs25_manager_app_v3")
         loc = geolocator.geocode(f"{store_name}, South Korea")
-        if loc:
-            return loc.latitude, loc.longitude, loc.address
+        if loc: return loc.latitude, loc.longitude, loc.address
         return None, None, None
-    except:
-        return None, None, None
+    except: return None, None, None
 
-# --- [함수 2: 해당 위치의 특정 날짜 날씨 예보 가져오기 (Open-Meteo)] ---
 def get_forecast(lat, lon, days_later=1):
     try:
-        # 무료 날씨 API (Open-Meteo) 호출
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,precipitation_sum&timezone=auto"
         res = requests.get(url).json()
-        
-        # days_later: 1이면 내일, 2면 모레
-        target_idx = days_later 
-        
-        temp_max = res['daily']['temperature_2m_max'][target_idx]
-        rain_sum = res['daily']['precipitation_sum'][target_idx]
-        
-        is_rainy = rain_sum > 5.0 # 5mm 이상 오면 비로 간주
-        
-        return {
-            "temp": temp_max,
-            "rain_mm": rain_sum,
-            "is_rainy": is_rainy
-        }
+        idx = days_later
+        t_max = res['daily']['temperature_2m_max'][idx]
+        rain = res['daily']['precipitation_sum'][idx]
+        return {"temp": t_max, "rain_mm": rain, "is_rainy": rain > 5.0}
     except:
-        # 에러 시 기본값 (서울 평균)
         return {"temp": 25, "rain_mm": 0, "is_rainy": False}
 
 # --- [메인 화면] ---
-st.title("🗺️ GS25 위치 기반 스마트 발주")
+st.title("📊 GS25 매출비교 기반 스마트 발주")
+st.markdown("매출비교(PDF/엑셀) 데이터를 업로드하면 **조회기간의 판매량**을 기준으로 발주를 제안합니다.")
 
-with st.expander("🏪 점포 설정 및 날씨 조회 (열기)", expanded=True):
-    # 1. 점포명 입력
-    col_s1, col_s2 = st.columns([2, 1])
-    input_store = col_s1.text_input("점포명 또는 지역명 입력", value="GS25 강남역점")
-    target_day = col_s2.selectbox("입고 예정일", ["내일 도착", "모레 도착"])
+# 1. 점포 및 날씨 설정
+with st.expander("🛠️ 점포 환경 및 날씨 설정 (클릭)", expanded=False):
+    store_name = st.text_input("점포명", "GS25 강남역점")
+    target_day_str = st.selectbox("입고일", ["내일", "모레"])
+    day_offset = 1 if target_day_str == "내일" else 2
     
-    # 날짜 계산 (1=내일, 2=모레)
-    day_offset = 1 if target_day == "내일 도착" else 2
-    
-    # 2. 위치 및 날씨 검색
-    if input_store:
-        lat, lon, addr = get_location(input_store)
-        
+    weather = {"temp": 25, "rain_mm": 0, "is_rainy": False}
+    if store_name:
+        lat, lon, addr = get_location(store_name)
         if lat:
-            st.success(f"📍 위치 확인: {addr}")
+            st.success(f"📍 {addr}")
             weather = get_forecast(lat, lon, day_offset)
-            
-            # 날씨 정보 표시
-            c1, c2, c3 = st.columns(3)
-            c1.metric("예상 최고기온", f"{weather['temp']}°C")
-            c2.metric("예상 강수량", f"{weather['rain_mm']}mm")
-            w_status = "☔ 비/눈" if weather['is_rainy'] else "☀️ 맑음/흐림"
-            c3.metric("날씨 상태", w_status)
-            
-            st.caption(f"※ 위 날씨는 **{target_day}** 기준 예보입니다.")
-        else:
-            st.error("위치를 찾지 못했습니다. '서울 강남구' 처럼 지역명으로 입력해보세요.")
-            weather = {"temp": 25, "rain_mm": 0, "is_rainy": False} # 기본값
-    else:
-        weather = {"temp": 25, "rain_mm": 0, "is_rainy": False}
+            st.info(f"🌡️ {weather['temp']}°C | ☔ {weather['rain_mm']}mm ({'비옴' if weather['is_rainy'] else '맑음'})")
 
-
-# --- [파일 업로드 및 분석] ---
+# 2. 데이터 기간 설정 (중요!)
 st.write("---")
-uploaded_file = st.file_uploader("POS 판매 데이터 업로드 (CSV)", type=['csv'])
+col_d1, col_d2 = st.columns(2)
+with col_d1:
+    data_days = st.number_input("업로드할 데이터의 조회 기간(일)", min_value=1, value=7, help="매출비교 리포트가 최근 7일치면 7, 30일치면 30을 입력하세요.")
+with col_d2:
+    target_stock_days = st.number_input("목표 재고 일수", min_value=1.0, value=2.5, step=0.5, help="하루에 1개 팔리면 2.5개를 재고로 둡니다.")
+
+# 3. 파일 업로드
+uploaded_file = st.file_uploader("매출비교 엑셀/CSV 파일 업로드", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    # --- [CSV 자동 감지 로직 (이전과 동일)] ---
+    # --- [데이터 로딩 및 전처리 로직] ---
     try:
-        df = pd.read_csv(uploaded_file)
-    except UnicodeDecodeError:
-        uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, encoding='cp949')
-    
-    df.columns = df.columns.str.strip()
+        # 1. 파일 읽기 (2번째 줄이 헤더이므로 header=1)
+        # CSV인지 엑셀인지 자동 판별은 어려우므로 try-except 사용하거나 pd.read_csv 시도
+        if uploaded_file.name.endswith('.xlsx'):
+            df_raw = pd.read_excel(uploaded_file, header=1)
+        else:
+            try:
+                df_raw = pd.read_csv(uploaded_file, header=1)
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                df_raw = pd.read_csv(uploaded_file, header=1, encoding='cp949')
 
-    if '카테고리' not in df.columns:
-        uploaded_file.seek(0)
-        try:
-            df = pd.read_csv(uploaded_file, header=1)
-        except UnicodeDecodeError:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding='cp949', header=1)
-        df.columns = df.columns.str.strip()
+        # 2. 핵심 컬럼 추출 (이름이 중복되므로 위치(Index)로 가져오는 게 가장 정확함)
+        # 보통 구조: [0]상품명 ... [4]판매수량(조회기간) ... [10]재고수량(추정)
+        # 안전을 위해 컬럼 이름에 '판매'와 '재고'가 포함된 컬럼을 찾습니다.
         
-    if '행사여부' in df.columns: df.rename(columns={'행사여부': '행사'}, inplace=True)
-    if '판매량' in df.columns: df.rename(columns={'판매량': '주간판매량'}, inplace=True)
-    if '현재 재고' in df.columns: df.rename(columns={'현재 재고': '현재재고'}, inplace=True)
+        # 컬럼명 공백 제거
+        df_raw.columns = [str(c).replace(" ", "").replace("\n", "") for c in df_raw.columns]
+        
+        # 필요한 데이터만 뽑아서 새로운 데이터프레임 생성
+        df = pd.DataFrame()
+        
+        # (1) 상품명: 첫 번째 컬럼
+        df['상품명'] = df_raw.iloc[:, 0]
+        
+        # (2) 카테고리: 보통 '등급' 앞이나 뒤에 있음, 없으면 빈칸 처리
+        if '카테고리' in df_raw.columns:
+            df['카테고리'] = df_raw['카테고리']
+        else:
+            df['카테고리'] = '기타' # 카테고리 정보가 없으면 기타
 
-    # --- [스마트 발주 계산 로직 (날씨 반영)] ---
-    def calculate_smart_order(row):
-        try:
-            sales = float(row.get('주간판매량', 0))
-        except: sales = 0.0
-        
-        try:
-            stock = int(row.get('현재재고', 0))
-        except: stock = 0
+        # (3) 판매수량: '판매수량'이라는 이름의 컬럼 중 '첫 번째' 것 (조회기간)
+        sales_cols = [c for c in df_raw.columns if '판매수량' in c]
+        if len(sales_cols) > 0:
+            df['기간판매량'] = df_raw[sales_cols[0]] # 첫번째 판매수량 사용
+        else:
+            st.error("파일에서 '판매수량' 열을 찾을 수 없습니다.")
+            st.stop()
             
-        avg_sales = sales / 7
-        target = avg_sales * 2.5
-        weight = 1.0
+        # (4) 재고수량: '재고'가 들어간 컬럼
+        stock_cols = [c for c in df_raw.columns if '재고' in c]
+        if len(stock_cols) > 0:
+            df['현재재고'] = df_raw[stock_cols[0]]
+        else:
+            # 재고 컬럼이 없으면 10번째(Index 10) 시도 (업로드해주신 샘플 기준)
+            if len(df_raw.columns) > 10:
+                 df['현재재고'] = df_raw.iloc[:, 10]
+            else:
+                df['현재재고'] = 0
+
+        # (5) 행사정보: '행사'가 들어간 컬럼
+        event_cols = [c for c in df_raw.columns if '행사' in c]
+        if len(event_cols) > 0:
+            df['행사'] = df_raw[event_cols[0]]
+        else:
+             df['행사'] = ''
+
+        # --- [데이터 클렌징 (숫자 변환)] ---
+        def clean_number(x):
+            try:
+                if pd.isna(x) or str(x).strip() == '': return 0
+                # 쉼표 제거 및 숫자 변환
+                return float(str(x).replace(',', ''))
+            except:
+                return 0
+
+        df['기간판매량'] = df['기간판매량'].apply(clean_number)
+        df['현재재고'] = df['현재재고'].apply(clean_number)
         
-        # [NEW] 실시간 위치 기반 날씨 로직 적용
-        cat = str(row.get('카테고리', ''))
-        name = str(row.get('상품명', ''))
-        
-        # 1. 기온 반영 (더우면 음료/빙과류 증가)
-        if weather['temp'] >= 28:
-            if cat in ['음료', '유제품', '아이스크림']: weight += 0.3
-            if '얼음' in name: weight += 0.5
+        # 상품명이 없는 줄(합계 등) 제거
+        df = df[df['상품명'].notna()]
+        df = df[df['상품명'] != '']
+
+        # --- [발주 계산 로직] ---
+        def calculate_order(row):
+            # 1. 일평균 판매량 계산
+            daily_sales = row['기간판매량'] / data_days
             
-        # 2. 강수량 반영 (비 오면 우산/막걸리/전류/라면 증가)
-        if weather['is_rainy']:
-            if "우산" in name: weight += 4.0   # 우산은 4배 발주
-            if cat == '면류': weight += 0.2    # 라면
-            if cat in ['안주류', '주류']: weight += 0.15 # 파전/막걸리 효과
+            # 2. 목표 재고량 (일평균 * 목표일수)
+            target = daily_sales * target_stock_days
             
-        # 3. 행사 반영
-        event = str(row.get('행사', ''))
-        if "1+1" in event: weight += 0.5
-        elif "2+1" in event: weight += 0.3
+            # 3. 가중치 적용 (날씨/행사)
+            weight = 1.0
+            
+            name = str(row['상품명'])
+            cat = str(row['카테고리'])
+            
+            # 날씨
+            if weather['temp'] >= 28:
+                if '얼음' in name or '아이스' in name or '음료' in cat: weight += 0.3
+            if weather['is_rainy']:
+                if '우산' in name: weight += 4.0
+                if '면류' in cat or '국물' in name: weight += 0.2
+            
+            # 행사 (행사 정보가 있다면)
+            if '1+1' in str(row['행사']): weight += 0.5
+            elif '2+1' in str(row['행사']): weight += 0.3
+            
+            # 4. 최종 필요량 - 현재재고
+            needed = (target * weight) - row['현재재고']
+            return max(0, int(needed))
 
-        return max(0, int((target * weight) - stock))
+        df['추천발주'] = df.apply(calculate_order, axis=1)
 
-    df['추천'] = df.apply(calculate_smart_order, axis=1)
+        # --- [결과 화면] ---
+        st.subheader("📋 발주 추천 리스트")
+        st.caption(f"기준
 
-    # --- [결과 화면] ---
-    st.subheader(f"📋 {target_day} 날씨 맞춤 발주 제안")
-    
-    if weather['is_rainy']:
-        st.info("☔ 비 예보가 있어 우산과 국물 요리 발주량을 늘렸습니다.")
-    if weather['temp'] >= 28:
-        st.warning("🔥 더운 날씨가 예상되어 음료/빙과류 재고를 확보합니다.")
-
-    edited_df = st.data_editor(
-        df[['상품명', '현재재고', '추천']],
-        column_config={
-            "상품명": st.column_config.TextColumn("상품명", disabled=True),
-            "현재재고": st.column_config.NumberColumn("현재재고", disabled=True),
-            "추천": st.column_config.NumberColumn("발주량", min_value=0, step=1)
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    st.write("")
-    if st.button("🚀 발주 확정 및 파일 저장", type="primary", use_container_width=True):
-        final = edited_df[edited_df['추천'] > 0]
-        csv = final.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 발주서 다운로드", csv, "Order_Result.csv", "text/csv", use_container_width=True)
-
-else:
-    st.info("👆 CSV 파일을 업로드해주세요.")
 
